@@ -1,0 +1,81 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+# Cancel superseded runs on the same ref.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            compiler: gcc
+            cc: gcc
+            cxx: g++
+          - os: ubuntu-latest
+            compiler: clang
+            cc: clang
+            cxx: clang++
+          - os: macos-latest
+            compiler: clang
+            cc: clang
+            cxx: clang++
+
+    name: ${{ matrix.os }} / ${{ matrix.compiler }}
+    runs-on: ${{ matrix.os }}
+    # The first (cache-cold) run builds DuckDB from source, which is slow.
+    timeout-minutes: 90
+
+    env:
+      CC: ${{ matrix.cc }}
+      CXX: ${{ matrix.cxx }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Ninja (Ubuntu)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y ninja-build
+
+      - name: Install Ninja (macOS)
+        if: runner.os == 'macOS'
+        run: brew install ninja
+
+      # Cache the built DuckDB / Lua / statcpp sources under download/. With a hit,
+      # CMake skips the (slow) DuckDB source build. Keyed on OS + compiler and on the
+      # dependency cmake scripts (which pin the versions / build flags).
+      - name: Cache dependencies (download/)
+        uses: actions/cache@v4
+        with:
+          path: download
+          key: deps-${{ matrix.os }}-${{ matrix.compiler }}-${{ hashFiles('cmake/DuckDB_C_CPP.cmake', 'cmake/lua.cmake', 'cmake/statcpp.cmake') }}
+          restore-keys: |
+            deps-${{ matrix.os }}-${{ matrix.compiler }}-
+
+      - name: Configure
+        run: |
+          cmake -S . -B build \
+            -DCMAKE_BUILD_TYPE=Debug \
+            -DCMAKE_C_COMPILER=${{ matrix.cc }} \
+            -DCMAKE_CXX_COMPILER=${{ matrix.cxx }}
+
+      - name: Build
+        run: cmake --build build --parallel
+
+      # No unit tests in this project; run the demo binary as a smoke test and
+      # require a clean exit plus the final "Done." marker.
+      - name: Smoke test (run demo)
+        run: |
+          export DYLD_LIBRARY_PATH="$PWD/download/DuckDB/DuckDB_C_CPP-install/lib:$DYLD_LIBRARY_PATH"
+          export LD_LIBRARY_PATH="$PWD/download/DuckDB/DuckDB_C_CPP-install/lib:$LD_LIBRARY_PATH"
+          ./build/a.out | tee run.log
+          grep -q "Done." run.log
