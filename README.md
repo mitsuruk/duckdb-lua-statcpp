@@ -1,5 +1,11 @@
 # duckdb-lua-statcpp
 
+[![CI](https://github.com/mitsuruk/duckdb-lua-statcpp/actions/workflows/ci.yml/badge.svg)](https://github.com/mitsuruk/duckdb-lua-statcpp/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE.md)
+[![C++17](https://img.shields.io/badge/C%2B%2B-17-blue.svg)](https://en.cppreference.com/w/cpp/17)
+![Platform](https://img.shields.io/badge/platform-macOS%20%7C%20Linux-lightgrey)
+![CMake](https://img.shields.io/badge/build-CMake-064F8C?logo=cmake)
+
 Statistical SQL functions for **DuckDB**, backed by the C++17
 [statcpp](https://github.com/mitsuruk/statcpp) library, with an optional **Lua**
 layer for authoring new functions without recompiling C++.
