@@ -152,7 +152,9 @@ target_include_directories(${PROJECT_NAME} PRIVATE ${DUCKDB_INSTALL_DIR}/include
 # (fmt, pg_query, re2, miniz, utf8proc, hyperloglog, fsst, etc.)
 # which must also be linked.
 # file(GLOB DUCKDB_ALL_LIBS "${DUCKDB_INSTALL_DIR}/lib/*.a")
-file(GLOB DUCKDB_ALL_LIBS "${DUCKDB_INSTALL_DIR}/lib/*.dylib")
+# Pick the single DuckDB shared library, cross-platform:
+# CMAKE_SHARED_LIBRARY_SUFFIX is .dylib on macOS and .so on Linux.
+file(GLOB DUCKDB_ALL_LIBS "${DUCKDB_INSTALL_DIR}/lib/libduckdb${CMAKE_SHARED_LIBRARY_SUFFIX}")
 
 
 target_link_libraries(${PROJECT_NAME} PRIVATE
