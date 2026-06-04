@@ -1,9 +1,8 @@
 # VSCode
 **/.vscode/
-*.code-workspace
-
-# clangd
 **/.cache/
+**/.cmake/
+*.code-workspace
 
 # macOS
 .DS_Store
@@ -25,14 +24,13 @@ Temporary Items
 .apdisk
 
 # CMake
-**/.cmake/
 **/build/
-**/download/
+**/build-ja/
 CMakeLists.txt.user
 CMakeCache.txt
 CMakeFiles
 CMakeScripts
-Testing/
+Testing
 Makefile
 cmake_install.cmake
 install_manifest.txt
@@ -53,53 +51,77 @@ CMakeUserPresets.json
 *~
 *.swp
 *.swo
-\#*\#
-.#*
+
+# Downloaded dependencies
+**/download/
 
 # Python related (including VSCode extensions)
 **/__pycache__/
 **/*.py[cod]
 **/*.ipynb_checkpoints/
 
-# Object files and build artifacts
+# R
+.RData
+.Rhistory
+
+# Object files and binaries
 *.dSYM/
 *.o
 *.a
 *.so
 *.dylib
 *.out
+*.dll
 *.exe
-*.gch
-*.pch
 
-# Xcode
-xcuserdata/
-*.xcscmblueprint
-*.xccheckout
-DerivedData/
-*.moved-aside
-*.hmap
-*.ipa
+# Coverage
+*.gcda
+*.gcno
+
+# Xcode (macOS environment)
+*.xcuserstate
+*.xcworkspace
+*.xcodeproj
 
 # Other IDEs
 .idea/
 
-# GCC coverage
-*.gcda
-*.gcno
-*.gcov
+# Doxygen output
+doxydocs/
 
-# Dependency files
-*.d
-
-# Core dumps
-core
-core.*
-vgcore.*
-
-# Environment
-.env
+# MkDocs output
+site/
 
 # ctags/tags related
 tags
 TAGS
+
+# Secrets and credentials
+*.pem
+*.key
+*.p12
+*.pfx
+*.crt
+*.cer
+*.token
+*.secret
+*.keystore
+*.jks
+.env
+.env.*
+credentials.json
+id_rsa
+id_ed25519
+id_ecdsa
+.aws/
+gcloud/
+
+# Claude Code MCP
+.mcp.json
+data/
+
+# Misc
+.markdownlint.json
+
+# Serena
+.serena/
