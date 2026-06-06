@@ -23,6 +23,7 @@
 #include "duckdb.hpp"
 
 #include "statcpp_udf.hpp"
+#include "statcpp_scalar.hpp"
 #include "lua_udf.hpp"
 
 namespace {
@@ -63,6 +64,68 @@ void CreateDemoData(duckdb::Connection& con) {
         "(1.0, 2.1), (2.0, 3.9), (3.0, 6.2), (4.0, 7.8), (5.0, 10.1), (6.0, 12.2)");
 }
 
+/**
+ * @brief 登録済みの全 stat_* 関数を 1 回ずつ実行し, 呼び出し可能であることを検証する.
+ *
+ * duckdb_functions() から関数名と引数型を取得し, 各引数型にダミー値を当てて
+ * `SELECT name(args...)` を実行する. LIST<DOUBLE> 引数には 6 要素のリテラル,
+ * DOUBLE 引数には 0.5 を与える. UDF は内部で例外を捕捉し NULL を返すため,
+ * SQL レベルでエラーになった関数のみを失敗として集計する(登録漏れ・型不整合の検出).
+ *
+ * @return 失敗した関数の数(0 なら全関数が呼び出し可能).
+ */
+int VerifyAllFunctions(duckdb::Connection& con) {
+    std::cout << "\n=== verification: invoke every registered stat_* function once ===\n";
+
+    auto fns = con.Query(
+        "SELECT function_name, parameter_types "
+        "FROM duckdb_functions() "
+        "WHERE function_name LIKE 'stat\\_%' ESCAPE '\\' "
+        "GROUP BY function_name, parameter_types "
+        "ORDER BY function_name");
+    if (fns->HasError()) {
+        std::cout << "ERROR enumerating functions: " << fns->GetError() << "\n";
+        return -1;
+    }
+
+    const std::string kListArg = "[1.0, 2.0, 3.0, 4.0, 5.0, 6.0]";
+    const std::string kScalarArg = "0.5";
+
+    int total = 0;
+    int failed = 0;
+    const duckdb::idx_t rows = fns->RowCount();
+    for (duckdb::idx_t r = 0; r < rows; ++r) {
+        const duckdb::Value name_val = fns->GetValue(0, r);
+        const duckdb::Value types_val = fns->GetValue(1, r);
+        if (name_val.IsNull() || types_val.IsNull()) {
+            continue;
+        }
+        const std::string name = name_val.ToString();
+        const auto& types = duckdb::ListValue::GetChildren(types_val);
+
+        std::string call = name + "(";
+        for (std::size_t i = 0; i < types.size(); ++i) {
+            if (i > 0) {
+                call += ", ";
+            }
+            const std::string t = types[i].ToString();
+            call += (t.find("[]") != std::string::npos) ? kListArg : kScalarArg;
+        }
+        call += ")";
+
+        ++total;
+        auto res = con.Query("SELECT " + call);
+        if (res->HasError()) {
+            ++failed;
+            std::cout << "  [FAIL] " << call << "  -> " << res->GetError() << "\n";
+        }
+    }
+
+    std::cout << "  invoked " << total << " functions, " << (total - failed) << " ok, " << failed
+              << " failed\n";
+    return failed;
+}
+
 }  // namespace
 
 int main() {
@@ -91,7 +154,7 @@ int main() {
                 "SELECT grp, "
                 "round(stat_mean(list(v)), 2) AS mean, "
                 "round(stat_median(list(v)), 2) AS median, "
-                "round(stat_stddev(list(v)), 2) AS stddev, "
+                "round(stat_stdev(list(v)), 2) AS stdev, "
                 "round(stat_iqr(list(v)), 2) AS iqr, "
                 "round(stat_skewness(list(v)), 3) AS skewness "
                 "FROM measurements GROUP BY grp ORDER BY grp");
@@ -110,11 +173,11 @@ int main() {
     // -----------------------------------------------------------------
     // 3. Robust statistics (resistant to the outlier in group A)
     // -----------------------------------------------------------------
-    RunAndPrint(con, "robust: non-robust (mean/stddev) vs robust (HL/MAD), note A's outlier",
+    RunAndPrint(con, "robust: non-robust (mean/stdev) vs robust (HL/MAD), note A's outlier",
                 "SELECT grp, "
                 "round(stat_mean(list(v)), 2) AS mean, "
                 "round(stat_hodges_lehmann(list(v)), 2) AS hodges_lehmann, "
-                "round(stat_stddev(list(v)), 2) AS stddev, "
+                "round(stat_stdev(list(v)), 2) AS stdev, "
                 "round(stat_mad(list(v)), 2) AS mad, "
                 "round(stat_trimmed_mean(list(v), 0.2), 2) AS trimmed_mean "
                 "FROM measurements GROUP BY grp ORDER BY grp");
@@ -124,21 +187,32 @@ int main() {
     // -----------------------------------------------------------------
     RunAndPrint(con, "two-sample: correlation and covariance of x and y",
                 "SELECT "
-                "round(stat_pearson_correlation(list(x), list(y)), 4) AS pearson, "
-                "round(stat_spearman_correlation(list(x), list(y)), 4) AS spearman, "
+                "round(stat_pearson_r(list(x), list(y)), 4) AS pearson, "
+                "round(stat_spearman_r(list(x), list(y)), 4) AS spearman, "
                 "round(stat_kendall_tau(list(x), list(y)), 4) AS kendall, "
                 "round(stat_covariance(list(x), list(y)), 4) AS covariance "
                 "FROM paired");
 
     // -----------------------------------------------------------------
-    // 5. Column transforms (LIST -> LIST): ranking and winsorization
+    // 5. Column transforms / window (LIST -> LIST): ranking and winsorization
     // -----------------------------------------------------------------
     RunAndPrint(con, "transform: original vs rank vs winsorized (group A with outlier)",
                 "WITH t AS ("
                 "  SELECT unnest(list(v ORDER BY v)) AS original, "
-                "         unnest(stat_rank_transform(list(v ORDER BY v))) AS rank, "
+                "         unnest(stat_rank(list(v ORDER BY v))) AS rank, "
                 "         unnest(stat_winsorize(list(v ORDER BY v))) AS winsorized "
                 "  FROM measurements WHERE grp = 'A'"
+                ") SELECT * FROM t");
+
+    // -----------------------------------------------------------------
+    // 5b. Window functions: rolling statistics over an ordered list
+    // -----------------------------------------------------------------
+    RunAndPrint(con, "window: 3-period rolling mean / sum over group B (ordered)",
+                "WITH t AS ("
+                "  SELECT unnest(list(v ORDER BY v)) AS value, "
+                "         unnest(stat_rolling_mean(list(v ORDER BY v), 3)) AS roll_mean3, "
+                "         unnest(stat_rolling_sum(list(v ORDER BY v), 3)) AS roll_sum3 "
+                "  FROM measurements WHERE grp = 'B'"
                 ") SELECT * FROM t");
 
     // -----------------------------------------------------------------
@@ -153,6 +227,26 @@ int main() {
                 ") SELECT *, "
                 "(SELECT round(stat_missing_rate(list(reading)), 3) FROM sensor) AS missing_rate "
                 "FROM cmp");
+
+    // -----------------------------------------------------------------
+    // 6b. Scalar functions: distributions, special functions, effect size
+    // -----------------------------------------------------------------
+    RunAndPrint(con, "scalar: distribution quantiles / pdf / special functions",
+                "SELECT "
+                "round(stat_normal_quantile(0.975, 0, 1), 4) AS z_975, "
+                "round(stat_normal_pdf(0, 0, 1), 4) AS npdf0, "
+                "round(stat_t_quantile(0.975, 10), 4) AS t_975_df10, "
+                "round(stat_chisq_cdf(3.84, 1), 4) AS chisq_cdf, "
+                "round(stat_binomial_pmf(2, 5, 0.5), 4) AS binom_pmf, "
+                "round(stat_erf(1.0), 4) AS erf1");
+
+    RunAndPrint(con, "scalar: effect size, power analysis and interpretation",
+                "SELECT "
+                "round(stat_cohens_h(0.6, 0.4), 4) AS cohens_h, "
+                "stat_n_t2(0.5, 0.80, 0.05) AS n_per_group, "
+                "round(stat_power_t2(0.5, 30, 30, 0.05), 4) AS power, "
+                "stat_interpret_d(0.5) AS d_label, "
+                "stat_interpret_r(0.1) AS r_label");
 
     // -----------------------------------------------------------------
     // 7. C++ path vs Lua path: results must match
@@ -201,6 +295,11 @@ int main() {
                 "SELECT grp, lua_stat_summary(list(v)) AS summary "
                 "FROM measurements GROUP BY grp ORDER BY grp");
 
+    // -----------------------------------------------------------------
+    // 9. Coverage verification: every registered stat_* function must be callable
+    // -----------------------------------------------------------------
+    const int failed = VerifyAllFunctions(con);
+
     std::cout << "\nDone.\n";
-    return 0;
+    return failed == 0 ? 0 : 1;
 }

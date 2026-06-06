@@ -11,11 +11,19 @@ Statistical SQL functions for **DuckDB**, backed by the C++17
 layer for authoring new functions without recompiling C++.
 
 Including a couple of headers and calling one registration function gives a
-DuckDB connection ~50 statistical SQL functions — descriptive statistics, order
-statistics, robust estimators, correlation/covariance, data transforms and
-missing-data handling — all computed by statcpp. The same data path is also
+DuckDB connection **200+ statistical SQL functions** — descriptive statistics,
+order statistics, robust estimators, correlation/covariance, weighted statistics,
+error/distance metrics, window/rolling statistics, time-series transforms,
+probability distributions (pdf/cdf/quantile/rand), special functions, effect
+sizes and power analysis — all computed by statcpp. The same data path is also
 reachable through Lua, so new SQL functions can be composed in a script and take
 effect on the next run with no rebuild.
+
+Function names mirror those of the sibling project
+[sqlite3-stats](https://github.com/mitsuruk/sqlite3StatisticalLibrary); this PoC
+covers the same set **except JSON-returning functions** (hypothesis-test result
+objects, frequency tables, survival curves, CI/regression objects), which are out
+of scope here.
 
 Released under the [MIT License](LICENSE.md). DuckDB, statcpp and Lua are
 third-party dependencies under their own licenses — see [License](#license).
@@ -25,8 +33,9 @@ third-party dependencies under their own licenses — see [License](#license).
 Two header-only layers you register on a `duckdb::Connection`:
 
 ```cpp
-#include "statcpp_udf.hpp"   // direct C++ path: ~50 statcpp functions as SQL UDFs
-#include "lua_udf.hpp"       // optional Lua path: author new functions in Lua
+#include "statcpp_udf.hpp"     // LIST-based UDFs: aggregates, two-column, window
+#include "statcpp_scalar.hpp"  // scalar UDFs: distributions, special functions, effect size
+#include "lua_udf.hpp"         // optional Lua path: author new functions in Lua
 
 duckdb::DuckDB db(nullptr);
 duckdb::Connection con(db);
@@ -43,7 +52,7 @@ built-in `list()` aggregate first:
 SELECT grp,
        stat_mean(list(v))            AS mean,
        stat_median(list(v))          AS median,
-       stat_stddev(list(v))          AS stddev,
+       stat_stdev(list(v))           AS stdev,
        stat_hodges_lehmann(list(v))  AS robust_location,
        stat_mad(list(v))             AS robust_scale,
        stat_percentile(list(v), 0.9) AS p90
@@ -51,10 +60,13 @@ FROM measurements
 GROUP BY grp;
 
 -- Correlation between two columns
-SELECT stat_pearson_correlation(list(x), list(y)) AS r FROM paired;
+SELECT stat_pearson_r(list(x), list(y)) AS r FROM paired;
 
--- Column transform: mean-impute missing values, preserving row order
-SELECT unnest(stat_impute_mean(list(reading ORDER BY id))) AS imputed FROM sensor;
+-- Rolling mean (window) over an ordered list, expanded back to rows
+SELECT unnest(stat_rolling_mean(list(v ORDER BY id), 3)) AS ma3 FROM measurements;
+
+-- Scalar: 97.5th percentile of the standard normal (≈ 1.96)
+SELECT stat_normal_quantile(0.975, 0, 1) AS z_975;
 ```
 
 > **Statistics reference.** This repository only *exposes* statcpp to SQL. For
@@ -64,50 +76,122 @@ SELECT unnest(stat_impute_mean(list(reading ORDER BY id))) AS imputed FROM senso
 
 ## Function catalog
 
-All functions take one or two `LIST<DOUBLE>` arguments. Missing values
+**200+ functions** in two families: **LIST-based** (a column is first aggregated
+with `list()`) and **scalar** (plain `DOUBLE` arguments). Missing values
 (SQL `NULL` / `NaN`) are dropped before single- and two-sample statistics
-(pairwise for two-sample); on invalid input (e.g. empty) the function returns
-SQL `NULL`.
+(pairwise for two-sample); on invalid input the function returns SQL `NULL`.
+Names mirror [sqlite3-stats](https://github.com/mitsuruk/sqlite3StatisticalLibrary).
 
-### Single sample → scalar — `(LIST<DOUBLE>) → DOUBLE`
+### Basic aggregates — `(LIST<DOUBLE>) → DOUBLE`
 
 | Category | Functions |
 | --- | --- |
 | Central tendency | `stat_mean` `stat_median` `stat_mode` `stat_geometric_mean` `stat_harmonic_mean` |
-| Totals / counts | `stat_sum` `stat_count` `stat_minimum` `stat_maximum` |
-| Dispersion | `stat_range` `stat_variance` `stat_population_variance` `stat_sample_variance` `stat_stddev` `stat_population_stddev` `stat_sample_stddev` `stat_coefficient_of_variation` `stat_iqr` |
-| Shape | `stat_skewness` `stat_sample_skewness` `stat_population_skewness` `stat_kurtosis` `stat_sample_kurtosis` `stat_population_kurtosis` |
-| Robust | `stat_mad` `stat_mad_scaled` `stat_hodges_lehmann` `stat_biweight_midvariance` |
+| Dispersion | `stat_range` `stat_var` `stat_population_variance` `stat_sample_variance` `stat_stdev` `stat_population_stddev` `stat_sample_stddev` `stat_cv` `stat_iqr` `stat_mad_mean` `stat_geometric_stddev` |
+| Shape | `stat_skewness` `stat_population_skewness` `stat_kurtosis` `stat_population_kurtosis` |
+| Estimation / robust | `stat_se` `stat_mad` `stat_mad_scaled` `stat_hodges_lehmann` |
+| Extras (no sqlite3 equiv.) | `stat_sum` `stat_count` `stat_minimum` `stat_maximum` |
 
-### Parameterized → scalar — `(LIST<DOUBLE>, DOUBLE) → DOUBLE`
+### Parameterized aggregates — `(LIST<DOUBLE>, DOUBLE) → DOUBLE`
 
-| Function | Parameter |
-| --- | --- |
-| `stat_percentile` | proportion `p` in `[0, 1]` (e.g. `0.9` = 90th percentile) |
-| `stat_trimmed_mean` | proportion trimmed per side, in `[0, 0.5)` |
+`stat_trimmed_mean` `stat_percentile` `stat_moe_mean` `stat_cohens_d`
+`stat_hedges_g` `stat_acf_lag` `stat_biweight_midvar`
 
-### Two samples → scalar — `(LIST<DOUBLE>, LIST<DOUBLE>) → DOUBLE`
-
-`stat_covariance` `stat_sample_covariance` `stat_population_covariance`
-`stat_pearson_correlation` `stat_spearman_correlation` `stat_kendall_tau`
-
-### Column transforms — `(LIST<DOUBLE>) → LIST<DOUBLE>`
+### Two-column aggregates — `(LIST<DOUBLE>, LIST<DOUBLE>[, DOUBLE]) → DOUBLE`
 
 | Category | Functions |
 | --- | --- |
-| Missing-value fill | `stat_impute_mean` `stat_fillna_mean` `stat_fillna_median` `stat_fillna_ffill` `stat_fillna_bfill` `stat_fillna_interpolate` |
-| Math transforms | `stat_log_transform` `stat_sqrt_transform` `stat_rank_transform` `stat_winsorize` |
-| Missing rate | `stat_missing_rate` *(→ scalar)* |
+| Correlation / covariance | `stat_covariance` `stat_population_covariance` `stat_pearson_r` `stat_spearman_r` `stat_kendall_tau` `stat_weighted_covariance` |
+| Weighted statistics | `stat_weighted_mean` `stat_weighted_harmonic_mean` `stat_weighted_variance` `stat_weighted_stddev` `stat_weighted_median` `stat_weighted_percentile` |
+| Regression (scalar) | `stat_r_squared` `stat_adjusted_r_squared` |
+| Error metrics | `stat_mae` `stat_mse` `stat_rmse` `stat_mape` |
+| Distance metrics | `stat_euclidean_dist` `stat_manhattan_dist` `stat_cosine_sim` `stat_cosine_dist` `stat_minkowski_dist` `stat_chebyshev_dist` |
+| Two-sample effect sizes | `stat_cohens_d2` `stat_hedges_g2` `stat_glass_delta` |
 
-Wrap a transform result in `unnest()` to expand it back into rows; keep input
-order with `list(col ORDER BY key)`.
+### Window / transforms — `(LIST<DOUBLE>[, DOUBLE]) → LIST<DOUBLE>`
+
+| Category | Functions |
+| --- | --- |
+| Rolling / moving | `stat_rolling_mean` `stat_rolling_std` `stat_rolling_min` `stat_rolling_max` `stat_rolling_sum` `stat_moving_avg` `stat_ema` |
+| Rank / fill | `stat_rank` `stat_fillna_mean` `stat_fillna_median` `stat_fillna_ffill` `stat_fillna_bfill` `stat_fillna_interp` |
+| Encoding / binning | `stat_label_encode` `stat_bin_width` `stat_bin_freq` |
+| Time series | `stat_lag` `stat_diff` `stat_seasonal_diff` |
+| Outliers / robust | `stat_outliers_iqr` `stat_outliers_zscore` `stat_outliers_mzscore` `stat_winsorize` |
+| Extras | `stat_impute_mean` `stat_log_transform` `stat_sqrt_transform` `stat_missing_rate` *(→ scalar)* |
+
+Wrap a window/transform result in `unnest()` to expand it back into rows; keep
+input order with `list(col ORDER BY key)`.
+
+### Scalar — distributions — `(DOUBLE…) → DOUBLE`
+
+Each distribution provides `pdf`/`pmf`, `cdf`, `quantile` and `rand`:
+
+`stat_normal_*` `stat_lognormal_*` `stat_uniform_*` `stat_exponential_*`
+`stat_gamma_*` `stat_beta_*` `stat_weibull_*` `stat_chisq_*` `stat_t_*`
+`stat_f_*` `stat_binomial_*` `stat_poisson_*` `stat_geometric_*`
+`stat_nbinom_*` `stat_hypergeom_*` `stat_bernoulli_*` `stat_duniform_*`
+
+### Scalar — special / tests / effect size — `(DOUBLE…) → DOUBLE | VARCHAR`
+
+| Category | Functions |
+| --- | --- |
+| Special functions | `stat_lgamma` `stat_tgamma` `stat_beta_func` `stat_lbeta` `stat_erf` `stat_erfc` `stat_betainc` `stat_betaincinv` `stat_norm_cdf` `stat_norm_quantile` `stat_gammainc_lower` `stat_gammainc_upper` `stat_gammainc_lower_inv` |
+| Combinatorics | `stat_binomial_coef` `stat_log_binomial_coef` `stat_log_factorial` |
+| Tests / corrections | `stat_bonferroni` `stat_bh_correction` `stat_holm_correction` `stat_nnt` `stat_aic` `stat_aicc` `stat_bic` `stat_boxcox` `stat_logarithmic_mean` |
+| Effect size | `stat_hedges_j` `stat_t_to_r` `stat_d_to_r` `stat_r_to_d` `stat_eta_squared_ef` `stat_partial_eta_sq` `stat_omega_squared_ef` `stat_cohens_h` |
+| Interpretation (`→ VARCHAR`) | `stat_interpret_d` `stat_interpret_r` `stat_interpret_eta2` |
+| Power / sample size | `stat_power_t1` `stat_n_t1` `stat_power_t2` `stat_n_t2` `stat_power_prop` `stat_n_prop` `stat_moe_prop` `stat_moe_prop_worst` `stat_n_moe_prop` `stat_n_moe_mean` |
 
 ### Scope
 
-Functions that fit a SQL scalar/list signature are exposed. statcpp routines that
-return rich objects (regression and GLM models, ANOVA tables, hypothesis-test
-result structures, distribution objects, clustering, survival models, …) are out
-of scope here — call statcpp directly in C++ for those.
+This PoC exposes every sqlite3-stats function that fits a `DOUBLE` / `LIST` /
+`VARCHAR-label` signature. **JSON-returning functions are out of scope** —
+hypothesis-test result objects (`stat_t_test`, `stat_anova1`, …), frequency
+tables, contingency tables, survival curves (Kaplan–Meier / Nelson–Aalen),
+confidence-interval and regression objects, and bootstrap distributions. Call
+statcpp directly in C++ for those.
+
+> **Scalar arities are fixed.** Every scalar function takes all of its arguments
+> explicitly (e.g. `stat_normal_pdf(x, mu, sigma)` — no defaulted `mu`/`sigma`).
+> Integer-valued arguments are passed as `DOUBLE` and cast internally.
+>
+> **Random functions** (`*_rand`) are registered as ordinary (deterministic) UDFs
+> because the DuckDB C++ UDF API exposes no volatility flag; calls with only
+> constant arguments may be constant-folded to a single value per query.
+
+### Differences from sqlite3-stats
+
+Function names and numerical results mirror
+[sqlite3-stats](https://github.com/mitsuruk/sqlite3StatisticalLibrary). The
+differences are in *which* functions exist and *how* they are invoked, not in the
+math:
+
+| Aspect | sqlite3-stats | this PoC (duckdb) |
+| --- | --- | --- |
+| JSON-returning functions | included (test/CI/regression/survival/frequency objects as JSON) | **omitted** — out of scope (see [Scope](#scope)) |
+| Window / rolling | true SQL window functions: `stat_rolling_mean(v, 3) OVER (ORDER BY t)` | `(LIST) → LIST` transforms: `unnest(stat_rolling_mean(list(v ORDER BY t), 3))` |
+| Aggregates | native aggregates: `stat_mean(v)` | applied to a `list()`: `stat_mean(list(v))` |
+| Scalar argument defaults | optional args with defaults (e.g. `stat_normal_pdf(x)` ⇒ `mu=0, sigma=1`) | **fixed arity**, all args required |
+| `*_rand` volatility | registered non-deterministic | registered deterministic (DuckDB C++ UDF API limitation) |
+| Renamed for clarity? | — | names are **identical** to sqlite3-stats (`stat_stdev`, `stat_var`, `stat_pearson_r`, `stat_fillna_interp`, …) |
+
+The following **statistical conventions are inherited unchanged** from
+sqlite3-stats / statcpp, and are called out here only because they can surprise:
+
+- **`stat_stdev` / `stat_var` use `ddof = 0` (population).** They are equivalent to
+  `stat_population_stddev` / `stat_population_variance`. For the sample estimators
+  (`ddof = 1`) use `stat_sample_stddev` / `stat_sample_variance`. Example:
+  for `{9, 10, 10.5, 11, 1000}`, `stat_stdev = 395.95` (population), while
+  `stat_sample_stddev = 442.69`.
+- **Rolling/window functions are leading-aligned.** `stat_rolling_mean(list(v), w)`
+  places each window result at the *first* position of its window, so the **last
+  `w − 1` rows are `NULL`** (not the first `w − 1`). The values themselves are the
+  means/sums of consecutive `w`-element runs.
+
+> **This is a PoC, so these choices are not set in stone.** Any of the differences
+> above can be revisited on request — e.g. trailing-aligned rolling, `ddof = 1`
+> defaults for `stat_stdev`/`stat_var`, defaulted scalar arguments, true window
+> functions, or exposing the JSON-returning functions. Open an issue or ask.
 
 ## Extending in Lua (sample)
 
@@ -175,7 +259,9 @@ statcpp (C++17, header-only)               the actual statistical computation
 
 | File | Role |
 | --- | --- |
-| [statcpp_udf.hpp](src/include/statcpp_udf.hpp) | Direct C++ path. Table-driven registration of all `stat_*` functions. |
+| [statcpp_compute.hpp](src/include/statcpp_compute.hpp) | DB-agnostic pure compute functions (`compute::*`) ported from statcpp. |
+| [statcpp_udf.hpp](src/include/statcpp_udf.hpp) | LIST-based UDFs: registration helpers + aggregate / two-column / window tables. |
+| [statcpp_scalar.hpp](src/include/statcpp_scalar.hpp) | Scalar `(DOUBLE…)` UDFs: distributions, special functions, effect size; plus the `RegisterStatcppFunctions` umbrella. |
 | [lua_udf.hpp](src/include/lua_udf.hpp) | Bridges DuckDB and Lua; registers each Lua function as a vectorized UDF. |
 | [lua_statcpp_bindings.hpp](src/include/lua_statcpp_bindings.hpp) | One-time C binding exposing statcpp to Lua as `require("statcpp")`. |
 | [src/lua/stats.lua](src/lua/stats.lua) | The file an extension developer edits — pure Lua. |
@@ -226,7 +312,9 @@ duckdb-lua-statcpp/
 │   ├── lua/
 │   │   └── stats.lua          # Lua extension functions (edited by the developer)
 │   └── include/
-│       ├── statcpp_udf.hpp           # Direct C++ path (all stat_* functions)
+│       ├── statcpp_compute.hpp       # Pure compute functions (DB-agnostic)
+│       ├── statcpp_udf.hpp           # LIST-based UDFs (aggregate/two-col/window)
+│       ├── statcpp_scalar.hpp        # Scalar UDFs (distributions/effect size) + umbrella
 │       ├── lua_statcpp_bindings.hpp  # C binding: statcpp -> Lua module
 │       └── lua_udf.hpp               # Registers Lua functions as DuckDB UDFs
 └── download/                  # Cached DuckDB / statcpp / Lua sources (git-ignored)
