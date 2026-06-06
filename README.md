@@ -1,7 +1,7 @@
 # duckdb-lua-statcpp
 
 [![CI](https://github.com/mitsuruk/duckdb-lua-statcpp/actions/workflows/ci.yml/badge.svg)](https://github.com/mitsuruk/duckdb-lua-statcpp/actions/workflows/ci.yml)
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE.md)
+[![License: PoC Evaluation v1.0](https://img.shields.io/badge/License-PoC%20Evaluation%20v1.0-orange.svg)](LICENSE.md)
 [![C++17](https://img.shields.io/badge/C%2B%2B-17-blue.svg)](https://en.cppreference.com/w/cpp/17)
 ![Platform](https://img.shields.io/badge/platform-macOS%20%7C%20Linux-lightgrey)
 ![CMake](https://img.shields.io/badge/build-CMake-064F8C?logo=cmake)
@@ -29,8 +29,10 @@ of scope here.
 > every category's SQL and result, plus the `203 functions, 203 ok` coverage
 > check — is checked in as [PoC-Output.txt](PoC-Output.txt).
 
-Released under the [MIT License](LICENSE.md). DuckDB, statcpp and Lua are
-third-party dependencies under their own licenses — see [License](#license).
+Released under the **PoC Evaluation License v1.0** — see [LICENSE.md](LICENSE.md)
+(view / compile / evaluate only; no redistribution or production use). DuckDB,
+statcpp and Lua are third-party dependencies under their own licenses — see
+[License](#license).
 
 ## What you get
 
@@ -345,15 +347,18 @@ duckdb-lua-statcpp/
 
 ## License
 
-This project is released under the **MIT License**.
-Copyright (c) 2026 mitsuruk. See [LICENSE.md](LICENSE.md) for the full
-terms.
+This repository is released under the **PoC Evaluation License v1.0** — see
+[LICENSE.md](LICENSE.md) for the full terms. In short, you may view, compile and
+internally evaluate the software, but may **not** redistribute or publish the
+source, use it in production, or claim ownership; it is provided "as is" without
+warranty.
 
-Third-party dependencies keep their own licenses:
+Third-party dependencies are **not** covered by that license and keep their own
+terms — refer to each project for the authoritative text:
 
-- [DuckDB](https://github.com/duckdb/duckdb) — MIT License
-- [statcpp](https://github.com/mitsuruk/statcpp) — MIT License
-- [Lua](https://www.lua.org/) — MIT License
+- [DuckDB](https://github.com/duckdb/duckdb)
+- [statcpp](https://github.com/mitsuruk/statcpp)
+- [Lua](https://www.lua.org/)
 
 DuckDB, statcpp and Lua are all fetched at build time (cached under
 `download/`, git-ignored) and are **not redistributed** as part of this
