@@ -1,24 +1,29 @@
 /**
  * @file statcpp_scalar.hpp
- * @brief statcpp のスカラ関数(分布・特殊関数・効果量・検出力等)を DuckDB UDF として登録する
+ * @brief Register statcpp scalar functions (distributions / special functions / effect sizes / ...) as DuckDB UDFs
  *
- * これらは LIST ではなく固定個数の DOUBLE 引数を取り DOUBLE(一部 VARCHAR)を返す,
- * 純粋なスカラ関数である. sqlite3StatisticalLibrary の `sf_*` を移植したもの.
+ * These take a fixed number of DOUBLE arguments and return DOUBLE (a few return
+ * VARCHAR), as plain scalar functions. Ported from the `sf_*` wrappers of
+ * sqlite3StatisticalLibrary.
  *
- * 設計方針(PoC 簡素化)
- * ----------------------
- *  - 各関数は固定 arity(全引数必須)で登録する. sqlite3 版の可変長引数(省略時デフォルト)
- *    は採用せず, 全引数を明示する形に統一する(DuckDB のオーバーロード/可変長の複雑さを回避).
- *  - 引数のいずれかが NULL の場合は SQL NULL を返す. 結果の NaN/Inf も SQL NULL になる.
- *  - 整数を取る statcpp 関数へは DOUBLE 引数をキャストして渡す.
+ * Design (PoC simplification)
+ * ---------------------------
+ *  - Every function is registered with a fixed arity (all arguments required). The
+ *    variadic / defaulted arguments of the sqlite3 version are not replicated; all
+ *    arguments are passed explicitly (avoids DuckDB overload / vararg complexity).
+ *  - If any argument is NULL, the result is SQL NULL. A NaN/Inf result is NULL too.
+ *  - statcpp functions that take integers receive the DOUBLE arguments cast to the
+ *    appropriate integer type.
  *
- * 乱数関数(*_rand)について
- * --------------------------
- *  DuckDB の CreateVectorizedFunction には非決定性(volatile)指定が無いため, これらは
- *  決定的関数として登録される. 定数引数のみの呼び出しは定数畳み込みされ, 全行で同一値に
- *  なりうる(PoC の既知の制限). 列値を引数に与えれば行ごとに評価される.
+ * Random functions (*_rand)
+ * -------------------------
+ *  DuckDB's CreateVectorizedFunction exposes no volatility (non-deterministic) flag,
+ *  so these are registered as deterministic functions. A call with only constant
+ *  arguments may be constant-folded to a single value across all rows (a known PoC
+ *  limitation). Pass a column argument to evaluate per row.
  *
- * JSON を返す関数(検定結果構造体・信頼区間オブジェクト等)は PoC の方針により対象外.
+ * JSON-returning functions (test-result / confidence-interval objects, ...) are out of
+ * scope for this PoC.
  */
 
 #pragma once
@@ -37,19 +42,19 @@
 
 namespace statcpp_duckdb {
 
-/// 固定 arity のスカラ計算関数: 引数ベクタ(size==arity)-> double.
+/// Fixed-arity scalar compute function: argument vector (size == arity) -> double.
 using ScalarMathFn = std::function<double(const std::vector<double>&)>;
-/// 固定 arity のスカラ計算関数: 引数ベクタ -> 文字列(ラベル等).
+/// Fixed-arity scalar compute function: argument vector -> string (label, ...).
 using ScalarStringFn = std::function<std::string(const std::vector<double>&)>;
 
 // ---------------------------------------------------------------------------
-// スカラ登録ヘルパ
+// Scalar registration helpers
 // ---------------------------------------------------------------------------
 
 /**
- * @brief (DOUBLE x arity) -> DOUBLE のスカラ UDF を登録する.
+ * @brief Register a scalar UDF (DOUBLE x arity) -> DOUBLE.
  *
- * 引数のいずれかが NULL なら NULL を返す. 結果 NaN/Inf も NULL.
+ * Returns NULL if any argument is NULL. A NaN/Inf result is NULL too.
  */
 inline void RegisterScalarMath(duckdb::Connection& con, const std::string& name, std::size_t arity,
                                ScalarMathFn fn) {
@@ -88,7 +93,7 @@ inline void RegisterScalarMath(duckdb::Connection& con, const std::string& name,
     con.CreateVectorizedFunction(name, arg_types, duckdb::LogicalType::DOUBLE, udf);
 }
 
-/// (DOUBLE x arity) -> VARCHAR のスカラ UDF を登録する(効果量の解釈ラベル等).
+/// Register a scalar UDF (DOUBLE x arity) -> VARCHAR (effect-size interpretation labels, ...).
 inline void RegisterScalarString(duckdb::Connection& con, const std::string& name, std::size_t arity,
                                  ScalarStringFn fn) {
     duckdb::scalar_function_t udf =
@@ -122,7 +127,7 @@ inline void RegisterScalarString(duckdb::Connection& con, const std::string& nam
 }
 
 // ---------------------------------------------------------------------------
-// 整数キャストのショートハンド(引数ベクタ a の j 番目を整数型へ)
+// Integer-cast shorthands (cast the j-th element of the argument vector `a`)
 // ---------------------------------------------------------------------------
 
 namespace scalar_detail {
@@ -136,7 +141,7 @@ inline std::size_t Sz(const std::vector<double>& a, std::size_t j) {
     return static_cast<std::size_t>(a[j]);
 }
 
-/// 効果量の大きさ enum を文字列へ.
+/// Convert an effect-size magnitude enum to a string.
 inline std::string MagnitudeToString(statcpp::effect_size_magnitude m) {
     switch (m) {
         case statcpp::effect_size_magnitude::negligible:
@@ -153,15 +158,16 @@ inline std::string MagnitudeToString(statcpp::effect_size_magnitude m) {
 }  // namespace scalar_detail
 
 // ---------------------------------------------------------------------------
-// スカラ関数の登録(123 関数: 検定補助 31 + 分布/変換 83 + 効果量解釈は VARCHAR)
+// Scalar function registration (123 functions: 31 test/helpers + 83 distributions/transforms;
+// effect-size interpretation returns VARCHAR)
 // ---------------------------------------------------------------------------
 
 inline void RegisterStatcppScalarFunctions(duckdb::Connection& con) {
     using namespace scalar_detail;
 
-    // ===== スカラ — 検定 / 補助(31 関数, JSON 返却は除外) =====
+    // ===== Scalar - tests / helpers (31 functions; JSON-returning ones excluded) =====
 
-    // 正規分布
+    // Normal distribution
     RegisterScalarMath(con, "stat_normal_pdf", 3,
                        [](const std::vector<double>& a) { return statcpp::normal_pdf(a[0], a[1], a[2]); });
     RegisterScalarMath(con, "stat_normal_cdf", 3,
@@ -172,7 +178,7 @@ inline void RegisterStatcppScalarFunctions(duckdb::Connection& con) {
     RegisterScalarMath(con, "stat_normal_rand", 2,
                        [](const std::vector<double>& a) { return statcpp::normal_rand(a[0], a[1]); });
 
-    // カイ二乗分布
+    // Chi-square distribution
     RegisterScalarMath(con, "stat_chisq_pdf", 2,
                        [](const std::vector<double>& a) { return statcpp::chisq_pdf(a[0], a[1]); });
     RegisterScalarMath(con, "stat_chisq_cdf", 2,
@@ -182,7 +188,7 @@ inline void RegisterStatcppScalarFunctions(duckdb::Connection& con) {
     RegisterScalarMath(con, "stat_chisq_rand", 1,
                        [](const std::vector<double>& a) { return statcpp::chisq_rand(a[0]); });
 
-    // t 分布
+    // t distribution
     RegisterScalarMath(con, "stat_t_pdf", 2,
                        [](const std::vector<double>& a) { return statcpp::t_pdf(a[0], a[1]); });
     RegisterScalarMath(con, "stat_t_cdf", 2,
@@ -192,7 +198,7 @@ inline void RegisterStatcppScalarFunctions(duckdb::Connection& con) {
     RegisterScalarMath(con, "stat_t_rand", 1,
                        [](const std::vector<double>& a) { return statcpp::t_rand(a[0]); });
 
-    // F 分布
+    // F distribution
     RegisterScalarMath(con, "stat_f_pdf", 3,
                        [](const std::vector<double>& a) { return statcpp::f_pdf(a[0], a[1], a[2]); });
     RegisterScalarMath(con, "stat_f_cdf", 3,
@@ -202,7 +208,7 @@ inline void RegisterStatcppScalarFunctions(duckdb::Connection& con) {
     RegisterScalarMath(con, "stat_f_rand", 2,
                        [](const std::vector<double>& a) { return statcpp::f_rand(a[0], a[1]); });
 
-    // 特殊関数(検定補助)
+    // Special functions (test helpers)
     RegisterScalarMath(con, "stat_betainc", 3,
                        [](const std::vector<double>& a) { return statcpp::betainc(a[0], a[1], a[2]); });
     RegisterScalarMath(con, "stat_betaincinv", 3,
@@ -219,7 +225,7 @@ inline void RegisterStatcppScalarFunctions(duckdb::Connection& con) {
         return statcpp::gammainc_lower_inv(a[0], a[1]);
     });
 
-    // 多重比較補正(p 値を返す)
+    // Multiple-testing corrections (return an adjusted p-value)
     RegisterScalarMath(con, "stat_bonferroni", 2,
                        [](const std::vector<double>& a) { return std::min(a[0] * a[1], 1.0); });
     RegisterScalarMath(con, "stat_bh_correction", 3, [](const std::vector<double>& a) -> double {
@@ -231,14 +237,14 @@ inline void RegisterStatcppScalarFunctions(duckdb::Connection& con) {
         return std::min(a[0] * (a[2] - a[1] + 1.0), 1.0);
     });
 
-    // 2x2 表の指標(double)
+    // 2x2 table measure (double)
     RegisterScalarMath(con, "stat_nnt", 4, [](const std::vector<double>& a) {
         const std::vector<std::vector<std::size_t>> table = {{Sz(a, 0), Sz(a, 1)},
                                                              {Sz(a, 2), Sz(a, 3)}};
         return statcpp::number_needed_to_treat(table);
     });
 
-    // モデル選択
+    // Model selection
     RegisterScalarMath(con, "stat_aic", 2,
                        [](const std::vector<double>& a) { return statcpp::aic(a[0], Sz(a, 1)); });
     RegisterScalarMath(con, "stat_aicc", 3, [](const std::vector<double>& a) {
@@ -248,7 +254,7 @@ inline void RegisterStatcppScalarFunctions(duckdb::Connection& con) {
         return statcpp::bic(a[0], Sz(a, 1), Sz(a, 2));
     });
 
-    // Box-Cox 変換
+    // Box-Cox transform
     RegisterScalarMath(con, "stat_boxcox", 2, [](const std::vector<double>& a) -> double {
         const double x = a[0];
         const double lambda = a[1];
@@ -256,9 +262,9 @@ inline void RegisterStatcppScalarFunctions(duckdb::Connection& con) {
         return (std::pow(x, lambda) - 1.0) / lambda;
     });
 
-    // ===== スカラ — 連続分布(24 関数) =====
+    // ===== Scalar - continuous distributions (24 functions) =====
 
-    // 一様分布
+    // Uniform distribution
     RegisterScalarMath(con, "stat_uniform_pdf", 3,
                        [](const std::vector<double>& a) { return statcpp::uniform_pdf(a[0], a[1], a[2]); });
     RegisterScalarMath(con, "stat_uniform_cdf", 3,
@@ -269,7 +275,7 @@ inline void RegisterStatcppScalarFunctions(duckdb::Connection& con) {
     RegisterScalarMath(con, "stat_uniform_rand", 2,
                        [](const std::vector<double>& a) { return statcpp::uniform_rand(a[0], a[1]); });
 
-    // 指数分布
+    // Exponential distribution
     RegisterScalarMath(con, "stat_exponential_pdf", 2,
                        [](const std::vector<double>& a) { return statcpp::exponential_pdf(a[0], a[1]); });
     RegisterScalarMath(con, "stat_exponential_cdf", 2,
@@ -280,7 +286,7 @@ inline void RegisterStatcppScalarFunctions(duckdb::Connection& con) {
     RegisterScalarMath(con, "stat_exponential_rand", 1,
                        [](const std::vector<double>& a) { return statcpp::exponential_rand(a[0]); });
 
-    // ガンマ分布
+    // Gamma distribution
     RegisterScalarMath(con, "stat_gamma_pdf", 3,
                        [](const std::vector<double>& a) { return statcpp::gamma_pdf(a[0], a[1], a[2]); });
     RegisterScalarMath(con, "stat_gamma_cdf", 3,
@@ -291,7 +297,7 @@ inline void RegisterStatcppScalarFunctions(duckdb::Connection& con) {
     RegisterScalarMath(con, "stat_gamma_rand", 2,
                        [](const std::vector<double>& a) { return statcpp::gamma_rand(a[0], a[1]); });
 
-    // ベータ分布
+    // Beta distribution
     RegisterScalarMath(con, "stat_beta_pdf", 3,
                        [](const std::vector<double>& a) { return statcpp::beta_pdf(a[0], a[1], a[2]); });
     RegisterScalarMath(con, "stat_beta_cdf", 3,
@@ -302,7 +308,7 @@ inline void RegisterStatcppScalarFunctions(duckdb::Connection& con) {
     RegisterScalarMath(con, "stat_beta_rand", 2,
                        [](const std::vector<double>& a) { return statcpp::beta_rand(a[0], a[1]); });
 
-    // 対数正規分布
+    // Log-normal distribution
     RegisterScalarMath(con, "stat_lognormal_pdf", 3, [](const std::vector<double>& a) {
         return statcpp::lognormal_pdf(a[0], a[1], a[2]);
     });
@@ -315,7 +321,7 @@ inline void RegisterStatcppScalarFunctions(duckdb::Connection& con) {
     RegisterScalarMath(con, "stat_lognormal_rand", 2,
                        [](const std::vector<double>& a) { return statcpp::lognormal_rand(a[0], a[1]); });
 
-    // ワイブル分布
+    // Weibull distribution
     RegisterScalarMath(con, "stat_weibull_pdf", 3,
                        [](const std::vector<double>& a) { return statcpp::weibull_pdf(a[0], a[1], a[2]); });
     RegisterScalarMath(con, "stat_weibull_cdf", 3,
@@ -326,9 +332,9 @@ inline void RegisterStatcppScalarFunctions(duckdb::Connection& con) {
     RegisterScalarMath(con, "stat_weibull_rand", 2,
                        [](const std::vector<double>& a) { return statcpp::weibull_rand(a[0], a[1]); });
 
-    // ===== スカラ — 離散分布(28 関数) =====
+    // ===== Scalar - discrete distributions (28 functions) =====
 
-    // 二項分布
+    // Binomial distribution
     RegisterScalarMath(con, "stat_binomial_pmf", 3, [](const std::vector<double>& a) {
         return statcpp::binomial_pmf(U64(a, 0), U64(a, 1), a[2]);
     });
@@ -342,7 +348,7 @@ inline void RegisterStatcppScalarFunctions(duckdb::Connection& con) {
         return static_cast<double>(statcpp::binomial_rand(U64(a, 0), a[1]));
     });
 
-    // ポアソン分布
+    // Poisson distribution
     RegisterScalarMath(con, "stat_poisson_pmf", 2, [](const std::vector<double>& a) {
         return statcpp::poisson_pmf(U64(a, 0), a[1]);
     });
@@ -356,7 +362,7 @@ inline void RegisterStatcppScalarFunctions(duckdb::Connection& con) {
         return static_cast<double>(statcpp::poisson_rand(a[0]));
     });
 
-    // 幾何分布
+    // Geometric distribution
     RegisterScalarMath(con, "stat_geometric_pmf", 2, [](const std::vector<double>& a) {
         return statcpp::geometric_pmf(U64(a, 0), a[1]);
     });
@@ -370,7 +376,7 @@ inline void RegisterStatcppScalarFunctions(duckdb::Connection& con) {
         return static_cast<double>(statcpp::geometric_rand(a[0]));
     });
 
-    // 負の二項分布
+    // Negative binomial distribution
     RegisterScalarMath(con, "stat_nbinom_pmf", 3, [](const std::vector<double>& a) {
         return statcpp::nbinom_pmf(U64(a, 0), a[1], a[2]);
     });
@@ -384,7 +390,7 @@ inline void RegisterStatcppScalarFunctions(duckdb::Connection& con) {
         return static_cast<double>(statcpp::nbinom_rand(a[0], a[1]));
     });
 
-    // 超幾何分布
+    // Hypergeometric distribution
     RegisterScalarMath(con, "stat_hypergeom_pmf", 4, [](const std::vector<double>& a) {
         return statcpp::hypergeom_pmf(U64(a, 0), U64(a, 1), U64(a, 2), U64(a, 3));
     });
@@ -398,7 +404,7 @@ inline void RegisterStatcppScalarFunctions(duckdb::Connection& con) {
         return static_cast<double>(statcpp::hypergeom_rand(U64(a, 0), U64(a, 1), U64(a, 2)));
     });
 
-    // ベルヌーイ分布
+    // Bernoulli distribution
     RegisterScalarMath(con, "stat_bernoulli_pmf", 2, [](const std::vector<double>& a) {
         return statcpp::bernoulli_pmf(U64(a, 0), a[1]);
     });
@@ -412,7 +418,7 @@ inline void RegisterStatcppScalarFunctions(duckdb::Connection& con) {
         return static_cast<double>(statcpp::bernoulli_rand(a[0]));
     });
 
-    // 離散一様分布
+    // Discrete uniform distribution
     RegisterScalarMath(con, "stat_duniform_pmf", 3, [](const std::vector<double>& a) {
         return statcpp::discrete_uniform_pmf(I64(a, 0), I64(a, 1), I64(a, 2));
     });
@@ -426,7 +432,7 @@ inline void RegisterStatcppScalarFunctions(duckdb::Connection& con) {
         return static_cast<double>(statcpp::discrete_uniform_rand(I64(a, 0), I64(a, 1)));
     });
 
-    // ===== スカラ — 組合せ / 特殊関数(9 関数) =====
+    // ===== Scalar - combinatorics / special functions (9 functions) =====
 
     RegisterScalarMath(con, "stat_binomial_coef", 2, [](const std::vector<double>& a) {
         return statcpp::binomial_coef(U64(a, 0), U64(a, 1));
@@ -449,7 +455,7 @@ inline void RegisterStatcppScalarFunctions(duckdb::Connection& con) {
     RegisterScalarMath(con, "stat_erfc", 1,
                        [](const std::vector<double>& a) { return statcpp::erfc(a[0]); });
 
-    // ===== スカラ — 基本統計(1 関数) =====
+    // ===== Scalar - basic statistics (1 function) =====
 
     RegisterScalarMath(con, "stat_logarithmic_mean", 2, [](const std::vector<double>& a) -> double {
         const double x = a[0];
@@ -459,7 +465,7 @@ inline void RegisterStatcppScalarFunctions(duckdb::Connection& con) {
         return (y - x) / (std::log(y) - std::log(x));
     });
 
-    // ===== スカラ — 効果量の補正 / 変換(8 関数) =====
+    // ===== Scalar - effect-size corrections / conversions (8 functions) =====
 
     RegisterScalarMath(con, "stat_hedges_j", 1, [](const std::vector<double>& a) {
         return statcpp::hedges_correction_factor(a[0]);
@@ -481,7 +487,7 @@ inline void RegisterStatcppScalarFunctions(duckdb::Connection& con) {
     RegisterScalarMath(con, "stat_cohens_h", 2,
                        [](const std::vector<double>& a) { return statcpp::cohens_h(a[0], a[1]); });
 
-    // ===== スカラ — 効果量の解釈(3 関数, VARCHAR) =====
+    // ===== Scalar - effect-size interpretation (3 functions, VARCHAR) =====
 
     RegisterScalarString(con, "stat_interpret_d", 1, [](const std::vector<double>& a) {
         return MagnitudeToString(statcpp::interpret_cohens_d(a[0]));
@@ -493,7 +499,7 @@ inline void RegisterStatcppScalarFunctions(duckdb::Connection& con) {
         return MagnitudeToString(statcpp::interpret_eta_squared(a[0]));
     });
 
-    // ===== スカラ — 検出力分析(6 関数) =====
+    // ===== Scalar - power analysis (6 functions) =====
 
     RegisterScalarMath(con, "stat_power_t1", 3, [](const std::vector<double>& a) {
         return statcpp::power_t_test_one_sample(a[0], Sz(a, 1), a[2]);
@@ -514,7 +520,7 @@ inline void RegisterStatcppScalarFunctions(duckdb::Connection& con) {
         return static_cast<double>(statcpp::sample_size_prop_test(a[0], a[1], a[2], a[3]));
     });
 
-    // ===== スカラ — 誤差許容 / 標本サイズ(4 関数) =====
+    // ===== Scalar - margin of error / sample size (4 functions) =====
 
     RegisterScalarMath(con, "stat_moe_prop", 3, [](const std::vector<double>& a) {
         return statcpp::margin_of_error_proportion(Sz(a, 0), Sz(a, 1), a[2]);
@@ -531,19 +537,19 @@ inline void RegisterStatcppScalarFunctions(duckdb::Connection& con) {
 }
 
 // ---------------------------------------------------------------------------
-// 全体 umbrella
+// Overall umbrella
 // ---------------------------------------------------------------------------
 
 /**
- * @brief すべての statcpp UDF を登録する(LIST 系 + スカラ系).
+ * @brief Register all statcpp UDFs (LIST-based + scalar).
  *
- * 統計量は通常 list() で構築した LIST に適用する. 例:
+ * Statistics are typically applied to a LIST built with list(), e.g.
  *
  *     SELECT stat_median(list(v)) FROM t;
  *     SELECT stat_percentile(list(v), 0.9) FROM t;
  *     SELECT stat_pearson_r(list(x), list(y)) FROM t;
  *     SELECT unnest(stat_rolling_mean(list(v ORDER BY id), 3)) FROM t;
- *     SELECT stat_normal_quantile(0.975, 0, 1);          -- スカラ
+ *     SELECT stat_normal_quantile(0.975, 0, 1);          -- scalar
  */
 inline void RegisterStatcppFunctions(duckdb::Connection& con) {
     RegisterStatcppListFunctions(con);

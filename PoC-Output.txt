@@ -1,0 +1,254 @@
+=== descriptive: location, spread and shape per group ===
+SQL: SELECT grp, round(stat_mean(list(v)), 2) AS mean, round(stat_median(list(v)), 2) AS median, round(stat_stdev(list(v)), 2) AS stdev, round(stat_iqr(list(v)), 2) AS iqr, round(stat_skewness(list(v)), 3) AS skewness FROM measurements GROUP BY grp ORDER BY grp
+grp     mean    median  stdev   iqr     skewness
+VARCHAR DOUBLE  DOUBLE  DOUBLE  DOUBLE  DOUBLE
+[ Rows: 2]
+A       208.1   10.5    395.95  1.0     2.236
+B       20.5    20.5    1.0     1.0     0.0
+
+
+
+=== order: min / median / 90th percentile / max per group ===
+SQL: SELECT grp, round(stat_minimum(list(v)), 2) AS min, round(stat_percentile(list(v), 0.5), 2) AS p50, round(stat_percentile(list(v), 0.9), 2) AS p90, round(stat_maximum(list(v)), 2) AS max FROM measurements GROUP BY grp ORDER BY grp
+grp     min     p50     p90     max
+VARCHAR DOUBLE  DOUBLE  DOUBLE  DOUBLE
+[ Rows: 2]
+A       9.0     10.5    604.4   1000.0
+B       19.0    20.5    21.6    22.0
+
+
+
+=== robust: non-robust (mean/stdev) vs robust (HL/MAD), note A's outlier ===
+SQL: SELECT grp, round(stat_mean(list(v)), 2) AS mean, round(stat_hodges_lehmann(list(v)), 2) AS hodges_lehmann, round(stat_stdev(list(v)), 2) AS stdev, round(stat_mad(list(v)), 2) AS mad, round(stat_trimmed_mean(list(v), 0.2), 2) AS trimmed_mean FROM measurements GROUP BY grp ORDER BY grp
+grp     mean    hodges_lehmann  stdev   mad     trimmed_mean
+VARCHAR DOUBLE  DOUBLE  DOUBLE  DOUBLE  DOUBLE
+[ Rows: 2]
+A       208.1   10.5    395.95  0.5     10.5
+B       20.5    20.5    1.0     0.5     20.5
+
+
+
+=== two-sample: correlation and covariance of x and y ===
+SQL: SELECT round(stat_pearson_r(list(x), list(y)), 4) AS pearson, round(stat_spearman_r(list(x), list(y)), 4) AS spearman, round(stat_kendall_tau(list(x), list(y)), 4) AS kendall, round(stat_covariance(list(x), list(y)), 4) AS covariance FROM paired
+pearson spearman        kendall covariance
+DOUBLE  DOUBLE  DOUBLE  DOUBLE
+[ Rows: 1]
+0.9991  1.0     1.0     7.07
+
+
+
+=== transform: original vs rank vs winsorized (group A with outlier) ===
+SQL: WITH t AS (  SELECT unnest(list(v ORDER BY v)) AS original,          unnest(stat_rank(list(v ORDER BY v))) AS rank,          unnest(stat_winsorize(list(v ORDER BY v))) AS winsorized   FROM measurements WHERE grp = 'A') SELECT * FROM t
+original        rank    winsorized
+DOUBLE  DOUBLE  DOUBLE
+[ Rows: 5]
+9.0     1.0     9.200000000000001
+10.0    2.0     10.0
+10.5    3.0     10.5
+11.0    4.0     11.0
+1000.0  5.0     802.1999999999998
+
+
+
+=== window: 3-period rolling mean / sum over group B (ordered) ===
+SQL: WITH t AS (  SELECT unnest(list(v ORDER BY v)) AS value,          unnest(stat_rolling_mean(list(v ORDER BY v), 3)) AS roll_mean3,          unnest(stat_rolling_sum(list(v ORDER BY v), 3)) AS roll_sum3   FROM measurements WHERE grp = 'B') SELECT * FROM t
+value   roll_mean3      roll_sum3
+DOUBLE  DOUBLE  DOUBLE
+[ Rows: 5]
+19.0    19.833333333333332      59.5
+20.0    20.5    61.5
+20.5    21.166666666666668      63.5
+21.0    NULL    NULL
+22.0    NULL    NULL
+
+
+
+=== missing: rate, and per-row original vs mean/median imputation ===
+SQL: WITH cmp AS (  SELECT unnest(list(reading ORDER BY id)) AS original,          unnest(stat_impute_mean(list(reading ORDER BY id))) AS imp_mean,          unnest(stat_fillna_median(list(reading ORDER BY id))) AS imp_median   FROM sensor) SELECT *, (SELECT round(stat_missing_rate(list(reading)), 3) FROM sensor) AS missing_rate FROM cmp
+original        imp_mean        imp_median      missing_rate
+DOUBLE  DOUBLE  DOUBLE  DOUBLE
+[ Rows: 6]
+10.0    10.0    10.0    0.333
+NULL    13.0    13.0    0.333
+12.0    12.0    12.0    0.333
+14.0    14.0    14.0    0.333
+NULL    13.0    13.0    0.333
+16.0    16.0    16.0    0.333
+
+
+
+=== scalar: distribution quantiles / pdf / special functions ===
+SQL: SELECT round(stat_normal_quantile(0.975, 0, 1), 4) AS z_975, round(stat_normal_pdf(0, 0, 1), 4) AS npdf0, round(stat_t_quantile(0.975, 10), 4) AS t_975_df10, round(stat_chisq_cdf(3.84, 1), 4) AS chisq_cdf, round(stat_binomial_pmf(2, 5, 0.5), 4) AS binom_pmf, round(stat_erf(1.0), 4) AS erf1
+z_975   npdf0   t_975_df10      chisq_cdf       binom_pmf       erf1
+DOUBLE  DOUBLE  DOUBLE  DOUBLE  DOUBLE  DOUBLE
+[ Rows: 1]
+1.96    0.3989  2.2281  0.95    0.3125  0.8427
+
+
+
+=== scalar: effect size, power analysis and interpretation ===
+SQL: SELECT round(stat_cohens_h(0.6, 0.4), 4) AS cohens_h, stat_n_t2(0.5, 0.80, 0.05) AS n_per_group, round(stat_power_t2(0.5, 30, 30, 0.05), 4) AS power, stat_interpret_d(0.5) AS d_label, stat_interpret_r(0.1) AS r_label
+cohens_h        n_per_group     power   d_label r_label
+DOUBLE  DOUBLE  DOUBLE  VARCHAR VARCHAR
+[ Rows: 1]
+0.4027  63.0    0.4907  medium  small
+
+
+
+=== parity: C++ stat_* vs Lua lua_stat_* (must match) ===
+SQL: SELECT grp, round(stat_hodges_lehmann(list(v)), 4) AS cpp_hl, round(lua_stat_hodges_lehmann(list(v)), 4) AS lua_hl, round(stat_mad(list(v)), 4) AS cpp_mad, round(lua_stat_mad(list(v)), 4) AS lua_mad, CASE WHEN stat_mad(list(v)) = lua_stat_mad(list(v)) THEN 'MATCH' ELSE 'MISMATCH' END AS check FROM measurements GROUP BY grp ORDER BY grp
+grp     cpp_hl  lua_hl  cpp_mad lua_mad check
+VARCHAR DOUBLE  DOUBLE  DOUBLE  DOUBLE  VARCHAR
+[ Rows: 2]
+A       10.5    10.5    0.5     0.5     MATCH
+B       20.5    20.5    0.5     0.5     MATCH
+
+
+
+--- Lua-only extensions (composition, policy, free-form report) ---
+Authored in stats.lua on top of statcpp primitives; no C++ rebuild needed.
+
+=== lua-only: robust coefficient of variation per group ===
+SQL: SELECT grp, round(lua_stat_robust_cv(list(v)), 4) AS robust_cv FROM measurements GROUP BY grp ORDER BY grp
+grp     robust_cv
+VARCHAR DOUBLE
+[ Rows: 2]
+A       0.0706
+B       0.0362
+
+
+
+=== lua-only: smart_impute policy (sensor 33% missing -> imputes) ===
+SQL: SELECT round(lua_stat_missing_rate(list(reading)), 3) AS missing_rate, lua_stat_smart_impute(list(reading ORDER BY id)) AS result FROM sensor
+missing_rate    result
+DOUBLE  DOUBLE[]
+[ Rows: 1]
+0.333   [10.0, 13.0, 12.0, 14.0, 13.0, 16.0]
+
+
+
+=== lua-only: smart_impute policy (sparse 67% missing -> refuses) ===
+SQL: SELECT round(lua_stat_missing_rate(list(reading)), 3) AS missing_rate, lua_stat_smart_impute(list(reading ORDER BY id)) AS result, lua_stat_smart_impute(list(reading ORDER BY id)) IS NULL AS refused FROM sparse
+missing_rate    result  refused
+DOUBLE  DOUBLE[]        BOOLEAN
+[ Rows: 1]
+0.667   NULL    true
+
+
+
+=== lua-only: free-form summary report per group ===
+SQL: SELECT grp, lua_stat_summary(list(v)) AS summary FROM measurements GROUP BY grp ORDER BY grp
+grp     summary
+VARCHAR VARCHAR
+[ Rows: 2]
+A       n=5 missing=0 | mean=208.10 median=10.50 min=9.00 max=1000.00 range=991.00 mad=0.50 | shape=right-skewed quality=A
+B       n=5 missing=0 | mean=20.50 median=20.50 min=19.00 max=22.00 range=3.00 mad=0.50 | shape=symmetric quality=A
+
+
+
+=== verification: invoke every registered stat_* function once ===
+  invoked 203 functions, 203 ok, 0 failed
+
+Done.
+build $ ./a.out > ../PoC-Output.txt
+grp     mean    median  stdev   iqr     skewness
+VARCHAR DOUBLE  DOUBLE  DOUBLE  DOUBLE  DOUBLE
+[ Rows: 2]
+A       208.1   10.5    395.95  1.0     2.236
+B       20.5    20.5    1.0     1.0     0.0
+
+
+grp     min     p50     p90     max
+VARCHAR DOUBLE  DOUBLE  DOUBLE  DOUBLE
+[ Rows: 2]
+A       9.0     10.5    604.4   1000.0
+B       19.0    20.5    21.6    22.0
+
+
+grp     mean    hodges_lehmann  stdev   mad     trimmed_mean
+VARCHAR DOUBLE  DOUBLE  DOUBLE  DOUBLE  DOUBLE
+[ Rows: 2]
+A       208.1   10.5    395.95  0.5     10.5
+B       20.5    20.5    1.0     0.5     20.5
+
+
+pearson spearman        kendall covariance
+DOUBLE  DOUBLE  DOUBLE  DOUBLE
+[ Rows: 1]
+0.9991  1.0     1.0     7.07
+
+
+original        rank    winsorized
+DOUBLE  DOUBLE  DOUBLE
+[ Rows: 5]
+9.0     1.0     9.200000000000001
+10.0    2.0     10.0
+10.5    3.0     10.5
+11.0    4.0     11.0
+1000.0  5.0     802.1999999999998
+
+
+value   roll_mean3      roll_sum3
+DOUBLE  DOUBLE  DOUBLE
+[ Rows: 5]
+19.0    19.833333333333332      59.5
+20.0    20.5    61.5
+20.5    21.166666666666668      63.5
+21.0    NULL    NULL
+22.0    NULL    NULL
+
+
+original        imp_mean        imp_median      missing_rate
+DOUBLE  DOUBLE  DOUBLE  DOUBLE
+[ Rows: 6]
+10.0    10.0    10.0    0.333
+NULL    13.0    13.0    0.333
+12.0    12.0    12.0    0.333
+14.0    14.0    14.0    0.333
+NULL    13.0    13.0    0.333
+16.0    16.0    16.0    0.333
+
+
+z_975   npdf0   t_975_df10      chisq_cdf       binom_pmf       erf1
+DOUBLE  DOUBLE  DOUBLE  DOUBLE  DOUBLE  DOUBLE
+[ Rows: 1]
+1.96    0.3989  2.2281  0.95    0.3125  0.8427
+
+
+cohens_h        n_per_group     power   d_label r_label
+DOUBLE  DOUBLE  DOUBLE  VARCHAR VARCHAR
+[ Rows: 1]
+0.4027  63.0    0.4907  medium  small
+
+
+grp     cpp_hl  lua_hl  cpp_mad lua_mad check
+VARCHAR DOUBLE  DOUBLE  DOUBLE  DOUBLE  VARCHAR
+[ Rows: 2]
+A       10.5    10.5    0.5     0.5     MATCH
+B       20.5    20.5    0.5     0.5     MATCH
+
+
+grp     robust_cv
+VARCHAR DOUBLE
+[ Rows: 2]
+A       0.0706
+B       0.0362
+
+
+missing_rate    result
+DOUBLE  DOUBLE[]
+[ Rows: 1]
+0.333   [10.0, 13.0, 12.0, 14.0, 13.0, 16.0]
+
+
+missing_rate    result  refused
+DOUBLE  DOUBLE[]        BOOLEAN
+[ Rows: 1]
+0.667   NULL    true
+
+
+grp     summary
+VARCHAR VARCHAR
+[ Rows: 2]
+A       n=5 missing=0 | mean=208.10 median=10.50 min=9.00 max=1000.00 range=991.00 mad=0.50 | shape=right-skewed quality=A
+B       n=5 missing=0 | mean=20.50 median=20.50 min=19.00 max=22.00 range=3.00 mad=0.50 | shape=symmetric quality=A

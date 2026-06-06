@@ -25,6 +25,10 @@ covers the same set **except JSON-returning functions** (hypothesis-test result
 objects, frequency tables, survival curves, CI/regression objects), which are out
 of scope here.
 
+> 📄 **Want to see it work first?** A full captured run of the demo —
+> every category's SQL and result, plus the `203 functions, 203 ok` coverage
+> check — is checked in as [PoC-Output.txt](PoC-Output.txt).
+
 Released under the [MIT License](LICENSE.md). DuckDB, statcpp and Lua are
 third-party dependencies under their own licenses — see [License](#license).
 
@@ -297,6 +301,10 @@ command with its path:
 ```bash
 DYLD_LIBRARY_PATH=download/DuckDB/DuckDB_C_CPP-install/lib ./build/a.out
 ```
+
+A full captured run of the demo is checked in as
+[PoC-Output.txt](PoC-Output.txt) for reference — each category's SQL and its
+result, ending with the `203 functions, 203 ok, 0 failed` coverage check.
 
 ## Project layout
 

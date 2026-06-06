@@ -65,14 +65,15 @@ void CreateDemoData(duckdb::Connection& con) {
 }
 
 /**
- * @brief 登録済みの全 stat_* 関数を 1 回ずつ実行し, 呼び出し可能であることを検証する.
+ * @brief Invoke every registered stat_* function once to verify it is callable.
  *
- * duckdb_functions() から関数名と引数型を取得し, 各引数型にダミー値を当てて
- * `SELECT name(args...)` を実行する. LIST<DOUBLE> 引数には 6 要素のリテラル,
- * DOUBLE 引数には 0.5 を与える. UDF は内部で例外を捕捉し NULL を返すため,
- * SQL レベルでエラーになった関数のみを失敗として集計する(登録漏れ・型不整合の検出).
+ * Reads the function names and argument types from duckdb_functions(), fills each
+ * argument type with a dummy value and runs `SELECT name(args...)`: a 6-element
+ * literal for a LIST<DOUBLE> argument, 0.5 for a DOUBLE argument. The UDFs catch
+ * exceptions internally and return NULL, so only functions that error at the SQL
+ * level are counted as failures (catching unregistered names / type mismatches).
  *
- * @return 失敗した関数の数(0 なら全関数が呼び出し可能).
+ * @return the number of failed functions (0 means every function is callable).
  */
 int VerifyAllFunctions(duckdb::Connection& con) {
     std::cout << "\n=== verification: invoke every registered stat_* function once ===\n";

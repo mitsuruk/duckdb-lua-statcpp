@@ -1,19 +1,20 @@
 /**
  * @file statcpp_compute.hpp
- * @brief statcpp を呼び出す純粋計算関数群(DB 非依存)
+ * @brief Pure compute functions over statcpp (database-agnostic)
  *
- * sqlite3StatisticalLibrary の `calc_*` / `wf_*` ラッパーを移植したもの.
- * いずれも DuckDB / SQLite に依存せず, `std::vector<double>` を入出力とする.
- * これらを statcpp_udf.hpp / statcpp_scalar.hpp の marshalling 層から呼び出す.
+ * Ported from the `calc_*` / `wf_*` wrappers of sqlite3StatisticalLibrary. None of
+ * these depend on DuckDB or SQLite; they take and return `std::vector<double>`.
+ * The marshalling layers in statcpp_udf.hpp / statcpp_scalar.hpp call into them.
  *
- * 設計方針
- * --------
- *  - 集約系: `(const Vec&[, const Vec&][, double]) -> double`
- *  - Window 系: `(const Vec& values, const std::vector<bool>& nulls, int param) -> Vec`
- *    values は欠損を NaN で保持, nulls[i] が欠損フラグ.
- *  - 結果の NaN / Inf は呼び出し側(marshalling 層)で SQL NULL に変換する.
+ * Conventions
+ * -----------
+ *  - Aggregates: `(const Vec&[, const Vec&][, double]) -> double`
+ *  - Window functions: `(const Vec& values, const std::vector<bool>& nulls, int param) -> Vec`
+ *    `values` keeps missing entries as NaN; `nulls[i]` flags a missing entry.
+ *  - NaN / Inf results are converted to SQL NULL by the marshalling layer.
  *
- * 各統計量の定義・前提・アルゴリズムは statcpp のドキュメントを参照のこと.
+ * For the definition, assumptions and algorithm of each statistic, see the statcpp
+ * documentation.
  */
 
 #pragma once
@@ -29,20 +30,20 @@
 
 namespace statcpp_duckdb::compute {
 
-/// statcpp へ渡すサンプルベクタ型.
+/// Sample vector type passed to statcpp.
 using Vec = std::vector<double>;
 
-/// NaN を返すショートハンド(不正入力時の表現).
+/// Shorthand for a NaN result (representation of invalid input).
 inline double NaN() {
     return std::numeric_limits<double>::quiet_NaN();
 }
 
 // ===========================================================================
-// 基本集約: (const Vec&) -> double
-// 入力は marshalling 層で欠損除去済み(必要に応じてここで sort する).
+// Basic aggregates: (const Vec&) -> double
+// The input is already NaN-free (and sorted, where the helper requests it).
 // ===========================================================================
 
-// --- 基本統計量 ---
+// --- Basic statistics ---
 
 inline double Mean(const Vec& v) { return statcpp::mean(v.begin(), v.end()); }
 
@@ -58,12 +59,12 @@ inline double GeometricMean(const Vec& v) { return statcpp::geometric_mean(v.beg
 
 inline double HarmonicMean(const Vec& v) { return statcpp::harmonic_mean(v.begin(), v.end()); }
 
-// --- ばらつき / 散布度 ---
+// --- Dispersion / spread ---
 
 inline double Range(const Vec& v) { return statcpp::range(v.begin(), v.end()); }
 
 inline double Var(const Vec& v) {
-    // stat_var は ddof=0(母分散と同じ)を既定とする.
+    // stat_var defaults to ddof=0 (same as the population variance).
     return statcpp::var(v.begin(), v.end(), static_cast<std::size_t>(0));
 }
 
@@ -97,7 +98,7 @@ inline double MadMean(const Vec& v) { return statcpp::mean_absolute_deviation(v.
 
 inline double GeometricStddev(const Vec& v) { return statcpp::geometric_stddev(v.begin(), v.end()); }
 
-// --- 分布の形状 ---
+// --- Shape of distribution ---
 
 inline double PopulationSkewness(const Vec& v) {
     if (v.size() < 3) return NaN();
@@ -119,14 +120,14 @@ inline double Kurtosis(const Vec& v) {
     return statcpp::sample_kurtosis(v.begin(), v.end());
 }
 
-// --- 推定 ---
+// --- Estimation ---
 
 inline double Se(const Vec& v) {
     if (v.size() < 2) return NaN();
     return statcpp::standard_error(v.begin(), v.end());
 }
 
-// --- ロバスト統計 ---
+// --- Robust statistics ---
 
 inline double Mad(const Vec& v) { return statcpp::mad(v.begin(), v.end()); }
 
@@ -135,7 +136,7 @@ inline double MadScaled(const Vec& v) { return statcpp::mad_scaled(v.begin(), v.
 inline double HodgesLehmann(const Vec& v) { return statcpp::hodges_lehmann(v.begin(), v.end()); }
 
 // ===========================================================================
-// パラメータ付き集約: (const Vec&, double) -> double
+// Parameterized aggregates: (const Vec&, double) -> double
 // ===========================================================================
 
 inline double TrimmedMean(const Vec& v, double proportion) {
@@ -176,11 +177,11 @@ inline double BiweightMidvar(const Vec& v, double c) {
 }
 
 // ===========================================================================
-// 2 列集約: (const Vec&, const Vec&) -> double
-// 入力は対応位置でペア化済み(欠損ペアは marshalling 層で除去).
+// Two-column aggregates: (const Vec&, const Vec&) -> double
+// Inputs are already pairwise-aligned (missing pairs dropped by the marshalling layer).
 // ===========================================================================
 
-// --- 相関 / 共分散 ---
+// --- Correlation / covariance ---
 
 inline double PopulationCovariance(const Vec& x, const Vec& y) {
     if (x.size() < 2) return NaN();
@@ -208,13 +209,14 @@ inline double KendallTau(const Vec& x, const Vec& y) {
 }
 
 inline double WeightedCovariance(const Vec& values, const Vec& weights) {
-    // 2 列インタフェースでは値列の重み付き自己共分散(= 重み付き分散)として扱う.
+    // With a 2-column interface this is the weighted self-covariance of the value
+    // column (i.e. the weighted variance).
     if (values.size() < 2) return NaN();
     return statcpp::weighted_covariance(values.begin(), values.end(),
                                         values.begin(), values.end(), weights.begin());
 }
 
-// --- 重み付き統計 ---
+// --- Weighted statistics ---
 
 inline double WeightedMean(const Vec& values, const Vec& weights) {
     return statcpp::weighted_mean(values.begin(), values.end(), weights.begin(), weights.end());
@@ -241,7 +243,7 @@ inline double WeightedPercentile(const Vec& values, const Vec& weights, double p
                                         weights.begin(), weights.end(), p);
 }
 
-// --- 回帰(double を返すもののみ) ---
+// --- Regression (the double-returning ones only) ---
 
 inline double RSquared(const Vec& actual, const Vec& predicted) {
     if (actual.size() < 2) return NaN();
@@ -254,7 +256,7 @@ inline double AdjustedRSquared(const Vec& actual, const Vec& predicted) {
                                        predicted.begin(), predicted.end(), 1);
 }
 
-// --- 誤差メトリクス ---
+// --- Error metrics ---
 
 inline double Mae(const Vec& actual, const Vec& predicted) {
     return statcpp::mae(actual.begin(), actual.end(), predicted.begin());
@@ -272,7 +274,7 @@ inline double Mape(const Vec& actual, const Vec& predicted) {
     return statcpp::mape(actual.begin(), actual.end(), predicted.begin());
 }
 
-// --- 距離メトリクス ---
+// --- Distance metrics ---
 
 inline double EuclideanDist(const Vec& a, const Vec& b) {
     return statcpp::euclidean_distance(a.begin(), a.end(), b.begin(), b.end());
@@ -298,7 +300,7 @@ inline double ChebyshevDist(const Vec& a, const Vec& b) {
     return statcpp::chebyshev_distance(a.begin(), a.end(), b.begin(), b.end());
 }
 
-// --- 2 標本効果量(double を返すもの) ---
+// --- Two-sample effect sizes (the double-returning ones) ---
 
 inline double CohensD2(const Vec& x, const Vec& y) {
     if (x.size() < 2 || y.size() < 2) return NaN();
@@ -316,11 +318,12 @@ inline double GlassDelta(const Vec& x, const Vec& y) {
 }
 
 // ===========================================================================
-// Window 系: (const Vec& values, const std::vector<bool>& nulls, int param) -> Vec
-// values は欠損を NaN で保持. 結果も同じ長さ(欠損位置は NaN).
+// Window functions: (const Vec& values, const std::vector<bool>& nulls, int param) -> Vec
+// `values` keeps missing entries as NaN. The result has the same length (missing
+// positions are NaN).
 // ===========================================================================
 
-/// 非欠損値のみを抽出する(NaN 非対応の statcpp 関数向け).
+/// Extract the non-missing values (for statcpp functions that do not handle NaN).
 inline Vec ExtractValid(const Vec& values, const std::vector<bool>& nulls) {
     Vec valid;
     valid.reserve(values.size());
@@ -481,7 +484,7 @@ inline Vec WfSeasonalDiff(const Vec& values, const std::vector<bool>& /*nulls*/,
     return padded;
 }
 
-/// 外れ値検出の共通処理: 非欠損値に検出器を適用し, 1.0(外れ値)/0.0/NaN を返す.
+/// Shared outlier helper: run a detector on the valid values and emit 1.0 (outlier) / 0.0 / NaN.
 template <typename Detector>
 inline Vec OutlierFlags(const Vec& values, const std::vector<bool>& nulls, Detector detect) {
     auto valid = ExtractValid(values, nulls);
